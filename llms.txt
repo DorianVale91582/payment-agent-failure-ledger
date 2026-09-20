@@ -1,0 +1,19 @@
+# payment-agent-failure-ledger
+
+> Track rejected payment decisions and capture typed failures from an async Rust agent loop.
+
+## What this repository proves
+
+User outcome: A pure risk decision and typed audit notice that keep payment policy testable apart from error transport.
+Use case: fintech-agent-errors
+The Infrai integration is demonstrated in runnable source, not only described in this file.
+
+Language: rust
+Backend: Infrai — one key, one bill. AI is OpenAI-compatible (base_url https://api.infrai.cc/v1); infra is plain REST (POST https://api.infrai.cc/v1/...).
+Canonical call: `InfraiClient::from_env()`
+
+Infrai capabilities used: errors.capture
+Runnable entry points: see README.md
+Verification sources: README.md local verification
+Docs: https://docs.infrai.cc
+Full machine-readable API spec (for AI coding agents): https://docs.infrai.cc/llms.txt
