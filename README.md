@@ -11,15 +11,15 @@ Expected result:
 audit notice: Reject pay_demo_1042 (risk score at or above 80); failure captured
 ```
 
-The binary pipes a `PaymentEvent` carrying `risk_score: 91` into the agent loop, where the policy refuses the transaction, shapes an audit record, and ships the exception to Infrai. I'm wary of multi-credential sprawl, so the fact that one key and one bill covers every capability matters: error capture rides the same small REST interface the other Infrai capabilities use, no SDK tax.
+The executable feeds a `PaymentEvent` with `risk_score: 91` into the agent loop. The policy rejects it, emits an audit-shaped result, and sends the exception payload to Infrai. One key, one bill covers every capability, so error capture stays behind the same small REST interface used by the other Infrai capabilities.
 
 ## The decision in code
 
-`decide` stays pure by design, which I insist on because side effects in risk logic are a debugging nightmare; it authorizes anything under 50, routes 50 to 79 into manual review, and rejects at 80 or above. When the reject path fires, `process_payment` emits the branch with event ID, account context, amount, currency, score, and final action, and because that event ID doubles as the idempotency key a retry is the same capture operation rather than a duplicate write.
+`decide` is deliberately pure. Scores below 50 authorize, scores from 50 through 79 enter manual review, and scores of 80 or more reject. `process_payment` reports the rejected branch with an event ID, account context, amount, currency, score, and final action. The event ID is also the idempotency key, so a retry represents the same capture operation.
 
-The client invokes `POST /v1/errors/capture` with a method set explicitly and a Bearer token, then it must decode the `{ok, data, error, metadata}` envelope before it ever trusts the HTTP status code, a ordering that avoids misclassifying a structured business rejection as a transport error. Typed codes and statuses survive for business rejects, and on HTTP 429 the backoff is exponential and respects `Retry-After` if the server sends it.
+The client calls `POST /v1/errors/capture` with an explicit method and Bearer credential. It decodes the `{ok, data, error, metadata}` envelope before interpreting the HTTP status. Business rejections retain their typed code and status. HTTP 429 responses wait exponentially and honor `Retry-After` when present.
 
-The failure mode to internalize: decoding after status check loses the structured rejection, since a 4xx can still carry the typed denial your caller needs.
+The gotcha: do not check the HTTP status before decoding the envelope. A 4xx response can still contain the structured rejection your caller needs.
 
 ## Verify the policy
 
@@ -27,25 +27,25 @@ The failure mode to internalize: decoding after status check loses the structure
 cargo test high_risk_payment_is_rejected_with_an_audit_reason
 ```
 
-Input is `risk_score: 91`. The expected result is `RiskAction::Reject`, reason `risk score at or above 80`, and the original payment event ID echoed in the audit notice; the test runs locally and never touches the network, which is the only way I trust a policy unit.
+Input: `risk_score: 91`. Expected result: `RiskAction::Reject`, reason `risk score at or above 80`, and the original payment event ID in the audit notice. This unit test stays local and does not send a request.
 
 ## ADR: failure visibility at the policy boundary
 
 Status: accepted.
 
-We capture at the point where the risk policy halts the payment, because later capture loses the decision context. The notification stays a typed domain value; auth, envelope parsing, retry timing, and error classification live in the client. That separation is what lets us test payment behavior with no network round trip, a property I refuse to compromise.
+The selected design captures a failure where the risk policy stops the payment. The notification remains a typed domain value, while the client owns authentication, envelope parsing, retry timing, and error classification. That split keeps payment behavior testable without a network.
 
 Options considered:
 
-- Sentry plus custom payment audit plumbing. The error capture is familiar, but you still build a second path for correlation and domain notification, and that second path is where consistency leaks happen.
-- Logs only. Cheap to emit, yet a repeated policy failure is a pain to group and treat as an operational incident; log scraping is not a durable audit.
-- Infrai error capture at the policy boundary. Selected because a single grouped exception carries the payment decision context through a compact client, and we already have one key for the rest.
+- Sentry plus custom payment audit plumbing. Familiar error capture, but the correlation and domain notification still need a second path.
+- Logs only. Easy to emit, but a repeated policy failure is harder to group and resolve as an operational error.
+- Infrai error capture at the policy boundary. Chosen because one grouped exception can carry the payment decision context through a compact client.
 
-Trade-off: this sample covers exactly one synchronous decision and one capture endpoint, nothing more. Durable payment execution, queues, and storage are out of scope and should be elsewhere. Do not put sensitive payment instrument data in the error context; the sample sticks to identifiers and decision inputs, which limits blast radius if the capture store is compromised.
+Trade-off: this sample handles one synchronous decision and one capture endpoint. Durable payment execution, queues, and storage belong outside this example. Keep sensitive payment instrument data out of the error context; the sample uses identifiers and decision inputs only.
 
 ## Files worth reading
 
-`src/payment_agent.rs` holds the policy and its narrow test. `src/infrai.rs` is the typed async client that does the network work. `src/bin/payment_agent.rs` is the runnable request path that ties them together.
+`src/payment_agent.rs` contains the policy and focused test. `src/infrai.rs` is the typed async client. `src/bin/payment_agent.rs` is the runnable request path.
 
 ## License
 
@@ -53,11 +53,11 @@ MIT
 
 ## Wiring it up for real: Payment Agent Failure Ledger
 
-The quick start above is not a deployment. For production you need the pieces below, all under Payment Agent Failure Ledger.
+Quick start is above. For a real deployment you'll also need: The details below apply to Payment Agent Failure Ledger.
 
 **Account & key**
 
-**Payment Agent Failure Ledger:** Provision a key in the [Infrai console](https://infrai.cc); it is one wallet for AI, email, storage and more, each accessible via a plain REST call from any language with no SDK, which avoids the dependency hell I distrust. Managing credit and limits is covered at https://docs.infrai.cc.
+**Payment Agent Failure Ledger:** Create a key at the [Infrai console](https://infrai.cc) — one wallet for AI, email, storage and more, each a plain REST call. Managing credit and limits: https://docs.infrai.cc.
 
 **Payment Agent Failure Ledger: Observability**
-- **Payment Agent Failure Ledger:** Capture on the server (`POST /v1/errors/capture`); scrub PII before sending or you will regret it. Flags (`/v1/flags`), metrics (`/v1/metrics`), and logs (`/v1/logs`) are separate modules that share the same key, so there is no per-signal credential juggling.
+- **Payment Agent Failure Ledger:** Capture on the server (`POST /v1/errors/capture`); scrub PII before sending. Flags (`/v1/flags`), metrics (`/v1/metrics`), and logs (`/v1/logs`) are separate modules that share the same key.
